@@ -1,9 +1,9 @@
 import os
 from datetime import datetime
 
-from qgis.PyQt.QtCore import QObject, QStandardPaths, Qt, pyqtSignal
-from qgis.PyQt.QtGui import QAction, QColor, QIcon
-from qgis.PyQt.QtWidgets import (
+from qgis.PyQt.QtCore import QObject, QStandardPaths, Qt, pyqtSignal # type: ignore
+from qgis.PyQt.QtGui import QAction, QColor, QIcon # type: ignore
+from qgis.PyQt.QtWidgets import (  # type: ignore
     QDialog,
     QLabel,
     QMessageBox,
@@ -11,7 +11,7 @@ from qgis.PyQt.QtWidgets import (
     QVBoxLayout,
     QPushButton,
 )
-from qgis.core import (
+from qgis.core import ( # type: ignore
     Qgis,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
@@ -20,13 +20,39 @@ from qgis.core import (
     QgsRasterLayer,
     QgsRectangle,
 )
-from qgis.gui import QgsFileWidget, QgsMapTool, QgsRubberBand
+from qgis.gui import QgsFileWidget, QgsMapTool, QgsRubberBand # type: ignore
 
 from .downloader import DEMDownloadWorker
 
 
+def _geographic_bounds(rectangle, source_crs):
+    # Transform a map rectangle to validated EPSG:4326 bounds.
+    geometry = QgsGeometry.fromRect(rectangle)
+    transform = QgsCoordinateTransform(
+        source_crs,
+        QgsCoordinateReferenceSystem("EPSG:4326"),
+        QgsProject.instance(),
+    )
+    geometry.transform(transform)
+    bounds = geometry.boundingBox()
+    if (
+        bounds.xMinimum() < -180
+        or bounds.xMaximum() > 180
+        or bounds.yMinimum() < -90
+        or bounds.yMaximum() > 90
+    ):
+        raise ValueError("The area is outside the geographic coordinate range.")
+    return (
+        bounds.xMinimum(),
+        bounds.yMinimum(),
+        bounds.xMaximum(),
+        bounds.yMaximum(),
+    )
+
+
 class AreaSelectionDialog(QDialog):
     def __init__(self, default_output_path, parent=None):
+        # Build the dialog for choosing an output raster and download area.
         super().__init__(parent)
         self.setWindowTitle("USGS 3DEP DEM Downloader")
         self.setMinimumWidth(480)
@@ -35,7 +61,8 @@ class AreaSelectionDialog(QDialog):
         layout.addWidget(
             QLabel(
                 "Choose an area on the map to download USGS 3DEP 1-meter DEM data. "
-                "Available coverage depends on the selected area."
+                "Use the current canvas extent or draw a rectangle. Available "
+                "coverage depends on the selected area."
             )
         )
         layout.addWidget(QLabel("Output DEM raster:"))
@@ -46,9 +73,14 @@ class AreaSelectionDialog(QDialog):
         self.output_file_widget.setDefaultRoot(os.path.dirname(default_output_path))
         self.output_file_widget.setFilePath(default_output_path)
         layout.addWidget(self.output_file_widget)
-        self.status_label = QLabel("Draw a rectangle on the map to begin.")
+        self.status_label = QLabel(
+            "Use the current canvas extent or draw a rectangle to begin."
+        )
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+
+        self.canvas_extent_button = QPushButton("Download Canvas Extent")
+        layout.addWidget(self.canvas_extent_button)
 
         self.select_button = QPushButton("Select Area on Map")
         self.select_button.setDefault(True)
@@ -65,6 +97,7 @@ class RectangleSelectionTool(QgsMapTool):
     selectionCancelled = pyqtSignal()
 
     def __init__(self, canvas):
+        # Initialize the map tool used to draw and select a rectangular area.
         super().__init__(canvas)
         self.canvas = canvas
         self.rubber_band = QgsRubberBand(canvas, Qgis.GeometryType.Polygon)
@@ -74,6 +107,7 @@ class RectangleSelectionTool(QgsMapTool):
         self.start_point = None
 
     def canvasPressEvent(self, event):
+        # Record the starting map point when the user presses the left mouse button.
         if event.button() == Qt.MouseButton.LeftButton:
             self.start_point = self.canvas.getCoordinateTransform().toMapCoordinates(
                 event.pos()
@@ -81,6 +115,7 @@ class RectangleSelectionTool(QgsMapTool):
             self.rubber_band.reset(Qgis.GeometryType.Polygon)
 
     def canvasMoveEvent(self, event):
+        # Update the rubber-band rectangle as the pointer moves.
         if self.start_point is not None:
             current = self.canvas.getCoordinateTransform().toMapCoordinates(
                 event.pos()
@@ -90,6 +125,7 @@ class RectangleSelectionTool(QgsMapTool):
             )
 
     def canvasReleaseEvent(self, event):
+        # Transform and emit the selected rectangle after the left mouse button is released.
         if event.button() != Qt.MouseButton.LeftButton or self.start_point is None:
             return
 
@@ -100,42 +136,23 @@ class RectangleSelectionTool(QgsMapTool):
         if rectangle.isEmpty():
             return
 
-        geometry = QgsGeometry.fromRect(rectangle)
         try:
-            transform = QgsCoordinateTransform(
-                self.canvas.mapSettings().destinationCrs(),
-                QgsCoordinateReferenceSystem("EPSG:4326"),
-                QgsProject.instance(),
+            bounds = _geographic_bounds(
+                rectangle, self.canvas.mapSettings().destinationCrs()
             )
-            geometry.transform(transform)
         except Exception as error:
             self.areaSelectionFailed.emit(str(error))
             return
 
-        bounds = geometry.boundingBox()
-        if (
-            bounds.xMinimum() < -180
-            or bounds.xMaximum() > 180
-            or bounds.yMinimum() < -90
-            or bounds.yMaximum() > 90
-        ):
-            self.areaSelectionFailed.emit(
-                "The selected area is outside the geographic coordinate range."
-            )
-            return
-
-        self.areaSelected.emit(
-            bounds.xMinimum(),
-            bounds.yMinimum(),
-            bounds.xMaximum(),
-            bounds.yMaximum(),
-        )
+        self.areaSelected.emit(*bounds)
 
     def keyPressEvent(self, event):
+        # Emit a cancellation signal when the user presses Escape.
         if event.key() == Qt.Key.Key_Escape:
             self.selectionCancelled.emit()
 
     def deactivate(self):
+        # Clear the in-progress selection when the map tool is deactivated.
         self.start_point = None
         self.rubber_band.reset(Qgis.GeometryType.Polygon)
         super().deactivate()
@@ -143,6 +160,7 @@ class RectangleSelectionTool(QgsMapTool):
 
 class USGSDEMPlugin(QObject):
     def __init__(self, iface):
+        # Initialize plugin state and retain the QGIS interface.
         super().__init__(iface.mainWindow())
         self.iface = iface
         self.action = None
@@ -153,6 +171,7 @@ class USGSDEMPlugin(QObject):
         self.progress_dialog = None
 
     def initGui(self):
+        # Add the plugin action to the QGIS toolbar and menu.
         icon_path = os.path.join(os.path.dirname(__file__), "logo.png")
         self.action = QAction(
             QIcon(icon_path), "Download USGS 3DEP DEM", self.iface.mainWindow()
@@ -162,6 +181,7 @@ class USGSDEMPlugin(QObject):
         self.iface.addPluginToMenu("USGS 3DEP Downloader", self.action)
 
     def unload(self):
+        # Restore the map tool, stop active work, and remove plugin actions.
         if self.selection_tool is not None:
             self._restore_map_tool()
             self.selection_tool = None
@@ -173,18 +193,43 @@ class USGSDEMPlugin(QObject):
             self.iface.removePluginMenu("USGS 3DEP Downloader", self.action)
 
     def run(self):
+        # Create and display the DEM download dialog.
         if self.dialog is None:
             self.dialog = AreaSelectionDialog(
                 self._default_output_path(), self.iface.mainWindow()
             )
             self.dialog.select_button.clicked.connect(self.start_area_selection)
+            self.dialog.canvas_extent_button.clicked.connect(
+                self.download_canvas_extent
+            )
             self.dialog.finished.connect(self._dialog_closed)
-        self.dialog.status_label.setText("Draw a rectangle on the map to begin.")
+        self.dialog.status_label.setText(
+            "Use the current canvas extent or draw a rectangle to begin."
+        )
         self.dialog.show()
         self.dialog.raise_()
         self.dialog.activateWindow()
 
+    def download_canvas_extent(self):
+        # Download DEM data for the current map canvas extent.
+        if self.worker is not None and self.worker.isRunning():
+            return
+        canvas = self.iface.mapCanvas()
+        try:
+            bounds = _geographic_bounds(
+                canvas.extent(), canvas.mapSettings().destinationCrs()
+            )
+        except Exception as error:
+            message = "Could not use the canvas extent: {}".format(error)
+            self.dialog.status_label.setText(message)
+            QMessageBox.warning(
+                self.iface.mainWindow(), "USGS 3DEP Downloader", message
+            )
+            return
+        self._area_selected(*bounds)
+
     def start_area_selection(self):
+        # Activate the map tool so the user can draw a custom download area.
         if self.worker is not None and self.worker.isRunning():
             return
         if self.selection_tool is not None:
@@ -201,6 +246,7 @@ class USGSDEMPlugin(QObject):
         )
 
     def _area_selected(self, min_x, min_y, max_x, max_y):
+        # Start the DEM worker for geographic bounds and show its progress dialog.
         self._restore_map_tool()
         self.dialog.status_label.setText(
             "Area selected. Searching USGS 3DEP and downloading available tiles..."
@@ -230,6 +276,7 @@ class USGSDEMPlugin(QObject):
         self.worker.start()
 
     def _new_output_path(self):
+        # Return the configured GeoTIFF path and create its parent directory.
         output_path = self.dialog.output_file_widget.filePath().strip()
         if not output_path:
             output_path = self._default_output_path()
@@ -241,6 +288,7 @@ class USGSDEMPlugin(QObject):
         return output_path
 
     def _default_output_path(self):
+        # Generate a timestamped GeoTIFF path in the plugin's download folder.
         output_folder = os.path.join(self._downloads_folder(), "USGS_3DEP")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         return os.path.join(
@@ -249,6 +297,7 @@ class USGSDEMPlugin(QObject):
 
     @staticmethod
     def _downloads_folder():
+        # Return the platform's Downloads folder or the user's home fallback.
         try:
             folder = QStandardPaths.writableLocation(
                 QStandardPaths.StandardLocation.DownloadLocation
@@ -258,6 +307,7 @@ class USGSDEMPlugin(QObject):
         return folder or os.path.join(os.path.expanduser("~"), "Downloads")
 
     def _update_progress(self, value, total, message):
+        # Update the visible progress dialog from worker progress signals.
         if self.progress_dialog is None:
             return
         self.progress_dialog.setLabelText(message)
@@ -265,6 +315,7 @@ class USGSDEMPlugin(QObject):
         self.progress_dialog.setValue(value)
 
     def _download_completed(self, output_path):
+        # Load a completed GeoTIFF into the current QGIS project.
         self._close_progress()
         layer = QgsRasterLayer(output_path, os.path.basename(output_path))
         if not layer.isValid():
@@ -288,6 +339,7 @@ class USGSDEMPlugin(QObject):
         )
 
     def _download_failed(self, message):
+        # Close progress UI and report the download failure to the user.
         self._close_progress()
         self.dialog.status_label.setText("Download failed: {}".format(message))
         QMessageBox.critical(
@@ -295,6 +347,7 @@ class USGSDEMPlugin(QObject):
         )
 
     def _close_progress(self):
+        # Close the progress dialog and release the finished worker.
         if self.progress_dialog is not None:
             self.progress_dialog.close()
             self.progress_dialog.deleteLater()
@@ -304,6 +357,7 @@ class USGSDEMPlugin(QObject):
             self.worker = None
 
     def _selection_failed(self, message):
+        # Restore the previous map tool and report a selection error.
         self._restore_map_tool()
         self.dialog.status_label.setText("Area selection failed: {}".format(message))
         QMessageBox.warning(
@@ -311,10 +365,12 @@ class USGSDEMPlugin(QObject):
         )
 
     def _selection_cancelled(self):
+        # Restore the previous map tool and report that selection was cancelled.
         self._restore_map_tool()
         self.dialog.status_label.setText("Area selection cancelled.")
 
     def _restore_map_tool(self):
+        # Restore the previous map tool and dispose of the rectangle selector.
         canvas = self.iface.mapCanvas()
         tool = self.selection_tool
         if tool is not None and canvas.mapTool() is tool:
@@ -328,5 +384,6 @@ class USGSDEMPlugin(QObject):
         self.previous_map_tool = None
 
     def _dialog_closed(self, result):
+        # Restore the previous map tool if the dialog closes during area selection.
         if self.selection_tool is not None:
             self._restore_map_tool()

@@ -1,6 +1,6 @@
 # USGS 3DEP Downloader
 
-A QGIS plugin that downloads available USGS 3D Elevation Program (3DEP) 1-meter DEM tiles for a rectangle drawn on the map, mosaics them into a GeoTIFF, and adds the result to the current project.
+A QGIS plugin that downloads available USGS 3D Elevation Program (3DEP) 1-meter DEM tiles for the current map canvas extent or a rectangle drawn on the map, mosaics them into a GeoTIFF, and adds the result to the current project.
 
 ## Requirements
 
@@ -21,10 +21,10 @@ The plugin uses QGIS's bundled Python and GDAL libraries; no separate Python env
 
 1. Click **Download USGS 3DEP DEM** in the toolbar or choose it from the **USGS 3DEP Downloader** menu.
 2. Choose the output GeoTIFF path in the dialog, or keep the suggested path in your Downloads folder.
-3. Click **Select Area on Map**, then drag a rectangle over the area you want. Press **Esc** to cancel selection.
+3. Click **Download Canvas Extent** to use the currently visible map area, or click **Select Area on Map** and drag a rectangle over a custom area. Press **Esc** to cancel rectangle selection.
 4. Wait for the available tiles to download and be mosaicked. The resulting raster is added to the current QGIS project.
 
-The selected map area is transformed to geographic coordinates for the USGS search. Results depend on available 1-meter coverage; if no downloadable tiles cover the area, the plugin reports an error.
+The canvas extent or selected rectangle is transformed to geographic coordinates for the USGS search. Results depend on available 1-meter coverage; if no downloadable tiles cover the area, the plugin reports an error.
 
 ## License
 

@@ -4,7 +4,7 @@ import tempfile
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from qgis.PyQt.QtCore import QThread, pyqtSignal
+from qgis.PyQt.QtCore import QThread, pyqtSignal # type: ignore
 
 
 class DEMDownloadWorker(QThread):
@@ -16,11 +16,13 @@ class DEMDownloadWorker(QThread):
     DATASET = "Digital Elevation Model (DEM) 1 meter"
 
     def __init__(self, min_x, min_y, max_x, max_y, output_path, parent=None):
+        # Initialize a worker for downloading DEM tiles within geographic bounds.
         super().__init__(parent)
         self.bounds = (min_x, min_y, max_x, max_y)
         self.output_path = output_path
 
     def run(self):
+        # Fetch matching tiles, mosaic them, and emit completion or failure signals.
         try:
             products = self._find_products()
             products = [product for product in products if product.get("downloadURL")]
@@ -69,6 +71,7 @@ class DEMDownloadWorker(QThread):
             self.failed.emit(str(error))
 
     def _find_products(self):
+        # Query the USGS API for every DEM product intersecting the requested bounds.
         products = []
         offset = 0
         while True:
@@ -100,6 +103,7 @@ class DEMDownloadWorker(QThread):
             offset += len(page)
 
     def _download_tile(self, url, work_dir, index):
+        # Download one DEM tile into the temporary working directory.
         filename = os.path.basename(urlparse(url).path)
         if not filename:
             filename = "tile_{}.tif".format(index)
@@ -116,7 +120,8 @@ class DEMDownloadWorker(QThread):
         return destination
 
     def _mosaic(self, tile_paths):
-        from osgeo import gdal
+        # Mosaic downloaded tiles into the output GeoTIFF and crop to the bounds.
+        from osgeo import gdal # type: ignore
 
         gdal.UseExceptions()
         first_tile = gdal.Open(tile_paths[0], gdal.GA_ReadOnly)
