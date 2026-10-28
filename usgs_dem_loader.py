@@ -169,6 +169,7 @@ class USGSDEMPlugin(QObject):
         self.previous_map_tool = None
         self.worker = None
         self.progress_dialog = None
+        self._output_timestamp = None
 
     def initGui(self):
         # Add the plugin action to the QGIS toolbar and menu.
@@ -214,6 +215,7 @@ class USGSDEMPlugin(QObject):
         # Download DEM data for the current map canvas extent.
         if self.worker is not None and self.worker.isRunning():
             return
+        self._output_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         canvas = self.iface.mapCanvas()
         try:
             bounds = _geographic_bounds(
@@ -232,6 +234,7 @@ class USGSDEMPlugin(QObject):
         # Activate the map tool so the user can draw a custom download area.
         if self.worker is not None and self.worker.isRunning():
             return
+        self._output_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if self.selection_tool is not None:
             self._restore_map_tool()
 
@@ -276,21 +279,27 @@ class USGSDEMPlugin(QObject):
         self.worker.start()
 
     def _new_output_path(self):
-        # Return the configured GeoTIFF path and create its parent directory.
-        output_path = self.dialog.output_file_widget.filePath().strip()
-        if not output_path:
-            output_path = self._default_output_path()
-        if not output_path.lower().endswith((".tif", ".tiff")):
-            output_path += ".tif"
+        # Use the configured folder and create a timestamped GeoTIFF for each download.
+        configured_path = self.dialog.output_file_widget.filePath().strip()
+        if not configured_path:
+            configured_path = self._default_output_path()
+        extension = os.path.splitext(configured_path)[1]
+        if extension.lower() not in (".tif", ".tiff"):
+            extension = ".tif"
 
-        output_folder = os.path.dirname(os.path.abspath(output_path))
+        output_folder = os.path.dirname(os.path.abspath(configured_path))
         os.makedirs(output_folder, exist_ok=True)
+        output_path = os.path.join(
+            output_folder,
+            "USGS_3DEP_DEM_{}{}".format(self._output_timestamp, extension),
+        )
+        self.dialog.output_file_widget.setFilePath(output_path)
         return output_path
 
     def _default_output_path(self):
         # Generate a timestamped GeoTIFF path in the plugin's download folder.
         output_folder = os.path.join(self._downloads_folder(), "USGS_3DEP")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return os.path.join(
             output_folder, "USGS_3DEP_DEM_{}.tif".format(timestamp)
         )
