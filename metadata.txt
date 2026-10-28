@@ -1,0 +1,14 @@
+[general]
+name=USGS 3DEP Downloader
+description=Downloads and mosaics USGS 3DEP 1-meter DEM tiles for a selected map area
+about=Downloads available USGS 3DEP 1-meter DEM tiles for a selected map area, mosaics them into a GeoTIFF, and adds the raster to the QGIS project.
+version=1.0
+qgisMinimumVersion=4.0
+qgisMaximumVersion=4.99
+author=ZvezdiPro
+email=zvezdibaronz@gmail.com
+icon=logo.png
+homepage=https://github.com/ZvezdiPro/USGS_DEM_Loader/blob/main/README.md
+repository=https://github.com/ZvezdiPro/USGS_DEM_Loader
+tracker=https://github.com/ZvezdiPro/USGS_DEM_Loader/issues
+license=GPL-3.0-or-later
