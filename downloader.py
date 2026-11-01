@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import time
+from threading import Event
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
@@ -14,20 +15,38 @@ class DEMDownloadWorker(QThread):
     progressChanged = pyqtSignal(int, int, str)
     completed = pyqtSignal(str, object)
     failed = pyqtSignal(str)
+    largeDownloadConfirmationRequested = pyqtSignal(object)
+    cancelled = pyqtSignal()
     cleanupWarning = pyqtSignal(str)
 
     API_URL = "https://tnmaccess.nationalmap.gov/api/v1/products"
     DATASET = "Digital Elevation Model (DEM) 1 meter"
-    LARGE_DOWNLOAD_WARNING_THRESHOLD = 1_000_000_000
 
     def __init__(
-        self, min_x, min_y, max_x, max_y, output_path, parent=None, cutline_path=None
+        self,
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+        output_path,
+        parent=None,
+        cutline_path=None,
+        download_warning_enabled=True,
+        download_warning_threshold_bytes=3_000_000_000,
     ):
         # Initialize a worker for downloading DEM tiles within geographic bounds.
         super().__init__(parent)
         self.bounds = (min_x, min_y, max_x, max_y)
         self.output_path = output_path
         self.cutline_path = cutline_path
+        self.download_warning_enabled = download_warning_enabled
+        self.download_warning_threshold_bytes = download_warning_threshold_bytes
+        self._download_approval_event = Event()
+        self._download_approved = False
+
+    def set_download_approval(self, approved):
+        self._download_approved = approved
+        self._download_approval_event.set()
 
     def run(self):
         # Fetch matching tiles, mosaic them, and emit completion or failure signals.
@@ -39,6 +58,22 @@ class DEMDownloadWorker(QThread):
                 raise RuntimeError(
                     "No USGS 3DEP 1-meter DEM tiles are available for this area."
                 )
+
+            total_download_size = sum(
+                int(product.get("sizeInBytes") or 0) for product in products
+            )
+            if (
+                self.download_warning_enabled
+                and total_download_size > self.download_warning_threshold_bytes
+            ):
+                self.largeDownloadConfirmationRequested.emit(total_download_size)
+                while not self._download_approval_event.wait(0.1):
+                    if self.isInterruptionRequested():
+                        self.cancelled.emit()
+                        return
+                if not self._download_approved:
+                    self.cancelled.emit()
+                    return
 
             work_dir = tempfile.mkdtemp(prefix="usgs_3dep_")
             tile_paths = []

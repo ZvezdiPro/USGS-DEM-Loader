@@ -2,11 +2,21 @@ import os
 import tempfile
 from datetime import datetime
 
-from qgis.PyQt.QtCore import QObject, QStandardPaths, Qt, pyqtSignal # type: ignore
+from qgis.PyQt.QtCore import ( # type: ignore
+    QObject,
+    QSettings,
+    QStandardPaths,
+    Qt,
+    pyqtSignal,
+)
 from qgis.PyQt.QtGui import QAction, QColor, QIcon # type: ignore
 from qgis.PyQt.QtWidgets import (  # type: ignore
     QComboBox,
+    QCheckBox,
     QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFormLayout,
     QLabel,
     QMessageBox,
     QProgressDialog,
@@ -15,6 +25,7 @@ from qgis.PyQt.QtWidgets import (  # type: ignore
 )
 from qgis.core import ( # type: ignore
     Qgis,
+    QgsApplication,
     QgsCoordinateReferenceSystem,
     QgsCoordinateTransform,
     QgsGeometry,
@@ -135,6 +146,80 @@ class DownloadProgressDialog(QProgressDialog):
         super().closeEvent(event)
 
 
+class LargeRasterSettingsDialog(QDialog):
+    def __init__(
+        self,
+        download_warning_enabled,
+        download_threshold_gb,
+        raster_warning_enabled,
+        raster_threshold_gb,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Large File Warning Settings")
+
+        layout = QVBoxLayout(self)
+        download_group = QVBoxLayout()
+        self.download_warning_enabled_checkbox = QCheckBox(
+            "Warn before downloading large source tiles"
+        )
+        self.download_warning_enabled_checkbox.setChecked(download_warning_enabled)
+        download_group.addWidget(self.download_warning_enabled_checkbox)
+        download_form = QFormLayout()
+        self.download_threshold_spinbox = self._threshold_spinbox(
+            download_threshold_gb
+        )
+        download_form.addRow(
+            "Warn when estimated download exceeds:",
+            self.download_threshold_spinbox,
+        )
+        download_group.addLayout(download_form)
+        layout.addLayout(download_group)
+        self.download_warning_enabled_checkbox.toggled.connect(
+            self.download_threshold_spinbox.setEnabled
+        )
+        self.download_threshold_spinbox.setEnabled(download_warning_enabled)
+
+        raster_group = QVBoxLayout()
+        self.raster_warning_enabled_checkbox = QCheckBox(
+            "Warn before keeping large final rasters"
+        )
+        self.raster_warning_enabled_checkbox.setChecked(raster_warning_enabled)
+        raster_group.addWidget(self.raster_warning_enabled_checkbox)
+        raster_form = QFormLayout()
+        self.raster_threshold_spinbox = self._threshold_spinbox(
+            raster_threshold_gb
+        )
+        raster_form.addRow(
+            "Warn when final raster exceeds:",
+            self.raster_threshold_spinbox,
+        )
+        raster_group.addLayout(raster_form)
+        layout.addLayout(raster_group)
+        self.raster_warning_enabled_checkbox.toggled.connect(
+            self.raster_threshold_spinbox.setEnabled
+        )
+        self.raster_threshold_spinbox.setEnabled(raster_warning_enabled)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _threshold_spinbox(value):
+        spinbox = QDoubleSpinBox()
+        spinbox.setRange(0.01, 1_000_000)
+        spinbox.setDecimals(2)
+        spinbox.setSingleStep(0.25)
+        spinbox.setSuffix(" GB")
+        spinbox.setValue(value)
+        return spinbox
+
+
 class RectangleSelectionTool(QgsMapTool):
     areaSelected = pyqtSignal(float, float, float, float)
     areaSelectionFailed = pyqtSignal(str)
@@ -203,12 +288,25 @@ class RectangleSelectionTool(QgsMapTool):
 
 
 class USGSDEMPlugin(QObject):
+    SETTINGS_WARNING_ENABLED = "USGS_DEM_Loader/warn_large_raster"
+    SETTINGS_WARNING_SIZE_GB = "USGS_DEM_Loader/large_raster_warning_size_gb"
+    SETTINGS_DOWNLOAD_WARNING_ENABLED = "USGS_DEM_Loader/warn_large_download"
+    SETTINGS_DOWNLOAD_WARNING_SIZE_GB = (
+        "USGS_DEM_Loader/large_download_warning_size_gb"
+    )
+    DEFAULT_WARNING_SIZE_GB = 1.0
+    DEFAULT_DOWNLOAD_WARNING_SIZE_GB = 3.0
+    BYTES_PER_GB = 1_000_000_000
+
     def __init__(self, iface):
         # Initialize plugin state and retain the QGIS interface.
         super().__init__(iface.mainWindow())
         self.iface = iface
         self.action = None
+        self.settings_action = None
+        self.settings = QSettings()
         self.dialog = None
+        self._last_default_output_path = None
         self.selection_tool = None
         self.previous_map_tool = None
         self.worker = None
@@ -221,12 +319,25 @@ class USGSDEMPlugin(QObject):
     def initGui(self):
         # Add the plugin action to the QGIS toolbar and menu.
         icon_path = os.path.join(os.path.dirname(__file__), "logo.png")
+        plugin_menu_title = "USGS 3DEP Downloader"
         self.action = QAction(
             QIcon(icon_path), "Download USGS 3DEP DEM", self.iface.mainWindow()
         )
         self.action.triggered.connect(self.run)
         self.iface.addToolBarIcon(self.action)
-        self.iface.addPluginToMenu("USGS 3DEP Downloader", self.action)
+        self.iface.addPluginToMenu(plugin_menu_title, self.action)
+        for menu_action in self.iface.pluginMenu().actions():
+            if menu_action.text().replace("&", "") == plugin_menu_title:
+                menu_action.setIcon(QIcon(icon_path))
+                break
+
+        self.settings_action = QAction(
+            QgsApplication.getThemeIcon("/mActionOptions.svg"),
+            "Large File Warning Settings...",
+            self.iface.mainWindow(),
+        )
+        self.settings_action.triggered.connect(self.open_settings)
+        self.iface.addPluginToMenu(plugin_menu_title, self.settings_action)
 
     def unload(self):
         # Restore the map tool, stop active work, and remove plugin actions.
@@ -240,12 +351,65 @@ class USGSDEMPlugin(QObject):
         if self.action is not None:
             self.iface.removeToolBarIcon(self.action)
             self.iface.removePluginMenu("USGS 3DEP Downloader", self.action)
+        if self.settings_action is not None:
+            self.iface.removePluginMenu(
+                "USGS 3DEP Downloader", self.settings_action
+            )
+
+    def open_settings(self):
+        dialog = LargeRasterSettingsDialog(
+            self.settings.value(
+                self.SETTINGS_DOWNLOAD_WARNING_ENABLED, True, type=bool
+            ),
+            self.settings.value(
+                self.SETTINGS_DOWNLOAD_WARNING_SIZE_GB,
+                self.DEFAULT_DOWNLOAD_WARNING_SIZE_GB,
+                type=float,
+            ),
+            self.settings.value(
+                self.SETTINGS_WARNING_ENABLED, True, type=bool
+            ),
+            self.settings.value(
+                self.SETTINGS_WARNING_SIZE_GB,
+                self.DEFAULT_WARNING_SIZE_GB,
+                type=float,
+            ),
+            self.iface.mainWindow(),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.settings.setValue(
+            self.SETTINGS_DOWNLOAD_WARNING_ENABLED,
+            dialog.download_warning_enabled_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            self.SETTINGS_DOWNLOAD_WARNING_SIZE_GB,
+            dialog.download_threshold_spinbox.value(),
+        )
+        self.settings.setValue(
+            self.SETTINGS_WARNING_ENABLED,
+            dialog.raster_warning_enabled_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            self.SETTINGS_WARNING_SIZE_GB,
+            dialog.raster_threshold_spinbox.value(),
+        )
+        self.settings.sync()
+        if self.settings.status() != QSettings.Status.NoError:
+            QMessageBox.warning(
+                self.iface.mainWindow(),
+                "USGS 3DEP Downloader",
+                "Could not save the large raster warning settings.",
+            )
 
     def run(self):
         # Create and display the DEM download dialog.
         if self.dialog is None:
+            default_output_path = self._default_output_path()
+            self._last_default_output_path = default_output_path
             self.dialog = AreaSelectionDialog(
-                self._default_output_path(), self.iface.mainWindow()
+                default_output_path, self.iface.mainWindow()
             )
             self.dialog.select_button.clicked.connect(self.start_area_selection)
             self.dialog.canvas_extent_button.clicked.connect(
@@ -401,10 +565,25 @@ class USGSDEMPlugin(QObject):
             output_path,
             parent=self,
             cutline_path=cutline_path,
+            download_warning_enabled=self.settings.value(
+                self.SETTINGS_DOWNLOAD_WARNING_ENABLED, True, type=bool
+            ),
+            download_warning_threshold_bytes=(
+                self.settings.value(
+                    self.SETTINGS_DOWNLOAD_WARNING_SIZE_GB,
+                    self.DEFAULT_DOWNLOAD_WARNING_SIZE_GB,
+                    type=float,
+                )
+                * self.BYTES_PER_GB
+            ),
         )
         self.worker.progressChanged.connect(self._update_progress)
         self.worker.completed.connect(self._download_completed)
         self.worker.failed.connect(self._download_failed)
+        self.worker.largeDownloadConfirmationRequested.connect(
+            self._confirm_large_download
+        )
+        self.worker.cancelled.connect(self._download_cancelled)
         self.worker.cleanupWarning.connect(self._cleanup_warning)
         self.progress_dialog = DownloadProgressDialog(self.iface.mainWindow())
         self.progress_dialog.setLabelText("Searching for DEM tiles...")
@@ -419,6 +598,27 @@ class USGSDEMPlugin(QObject):
         self.progress_dialog.setAutoReset(False)
         self.progress_dialog.show()
         self.worker.start()
+
+    def _confirm_large_download(self, size_in_bytes):
+        if self.worker is None:
+            return
+        if self._download_cancelled_by_user or self.worker.isInterruptionRequested():
+            self.worker.set_download_approval(False)
+            return
+
+        size_gb = size_in_bytes / self.BYTES_PER_GB
+        answer = QMessageBox.warning(
+            self.iface.mainWindow(),
+            "Large DEM Download",
+            "The selected area includes source tiles with an estimated total "
+            "download size of {:.2f} GB ({} bytes). Do you want to proceed? "
+            "The final raster may be smaller.".format(size_gb, size_in_bytes),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        self.worker.set_download_approval(
+            answer == QMessageBox.StandardButton.Yes
+        )
 
     def _confirm_dialog_close(self):
         # Ask before closing either window while search or download work is active.
@@ -445,11 +645,28 @@ class USGSDEMPlugin(QObject):
             self.progress_dialog = None
         return True
 
+    def _download_cancelled(self):
+        self._close_progress()
+        self._download_cancelled_by_user = False
+        self._set_status("Download cancelled by user.")
+
     def _new_output_path(self):
         # Preserve the configured filename and ensure it has a GeoTIFF extension.
         configured_path = self.dialog.output_file_widget.filePath().strip()
+        use_default_path = not configured_path
         if not configured_path:
             configured_path = self._default_output_path()
+        elif self._last_default_output_path is not None:
+            current_path = os.path.normcase(os.path.abspath(configured_path))
+            last_default_path = os.path.normcase(
+                os.path.abspath(self._last_default_output_path)
+            )
+            if current_path == last_default_path:
+                configured_path = self._default_output_path()
+                use_default_path = True
+            else:
+                self._last_default_output_path = None
+
         configured_path = os.path.abspath(configured_path)
         extension = os.path.splitext(configured_path)[1]
         if extension.lower() not in (".tif", ".tiff"):
@@ -458,13 +675,19 @@ class USGSDEMPlugin(QObject):
         output_folder = os.path.dirname(configured_path)
         os.makedirs(output_folder, exist_ok=True)
         output_path = os.path.join(output_folder, os.path.basename(configured_path))
+        while use_default_path and os.path.exists(output_path):
+            output_path = self._default_output_path()
+        if use_default_path:
+            self._last_default_output_path = output_path
+        else:
+            self._last_default_output_path = None
         self.dialog.output_file_widget.setFilePath(output_path)
         return output_path
 
     def _default_output_path(self):
         # Generate a timestamped GeoTIFF path in the plugin's download folder.
         output_folder = os.path.join(self._downloads_folder(), "USGS_3DEP")
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         return os.path.join(
             output_folder, "USGS_3DEP_DEM_{}.tif".format(timestamp)
         )
@@ -512,8 +735,16 @@ class USGSDEMPlugin(QObject):
                 )
             return
 
-        if output_size > DEMDownloadWorker.LARGE_DOWNLOAD_WARNING_THRESHOLD:
-            size_gb = output_size / 1_000_000_000
+        warning_enabled = self.settings.value(
+            self.SETTINGS_WARNING_ENABLED, True, type=bool
+        )
+        threshold_gb = self.settings.value(
+            self.SETTINGS_WARNING_SIZE_GB,
+            self.DEFAULT_WARNING_SIZE_GB,
+            type=float,
+        )
+        if warning_enabled and output_size > threshold_gb * self.BYTES_PER_GB:
+            size_gb = output_size / self.BYTES_PER_GB
             answer = QMessageBox.warning(
                 self.iface.mainWindow(),
                 "Large DEM Raster",

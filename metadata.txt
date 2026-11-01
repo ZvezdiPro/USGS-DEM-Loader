@@ -1,8 +1,8 @@
 [general]
 name=USGS 3DEP Downloader
-description=Downloads and mosaics USGS 3DEP 1-meter DEM tiles for a selected map area
-about=Downloads available USGS 3DEP 1-meter DEM tiles for a selected map area, mosaics them into a GeoTIFF, and adds the raster to the QGIS project.
-version=1.0
+description=Downloads and mosaics USGS 3DEP 1-meter DEM tiles for the map extent, a drawn area, or a polygon layer, with configurable large-file warnings.
+about=Downloads available USGS 3DEP 1-meter DEM tiles for the current map canvas extent, a rectangle drawn on the map, or a polygon vector layer; mosaics the tiles into a GeoTIFF; and adds the raster to the QGIS project. Configurable warnings can prompt before large source-tile downloads and before keeping large final rasters. The warning thresholds can be adjusted or disabled independently in the plugin settings.
+version=1.1
 qgisMinimumVersion=4.0
 qgisMaximumVersion=4.99
 author=ZvezdiPro
