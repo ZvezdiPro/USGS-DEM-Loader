@@ -12,12 +12,13 @@ from qgis.PyQt.QtCore import QThread, pyqtSignal # type: ignore
 
 class DEMDownloadWorker(QThread):
     progressChanged = pyqtSignal(int, int, str)
-    completed = pyqtSignal(str)
+    completed = pyqtSignal(str, object)
     failed = pyqtSignal(str)
     cleanupWarning = pyqtSignal(str)
 
     API_URL = "https://tnmaccess.nationalmap.gov/api/v1/products"
     DATASET = "Digital Elevation Model (DEM) 1 meter"
+    LARGE_DOWNLOAD_WARNING_THRESHOLD = 1_000_000_000
 
     def __init__(
         self, min_x, min_y, max_x, max_y, output_path, parent=None, cutline_path=None
@@ -63,6 +64,7 @@ class DEMDownloadWorker(QThread):
             self._mosaic(tile_paths)
             if self.isInterruptionRequested():
                 raise RuntimeError("The download was interrupted.")
+            output_size = os.path.getsize(self.output_path)
         except Exception as error:
             cleanup_errors = []
             if work_dir is not None:
@@ -98,9 +100,9 @@ class DEMDownloadWorker(QThread):
                 )
 
         self.progressChanged.emit(
-            total, total, "Adding the completed DEM to the map..."
+            total, total, "Finalizing the completed DEM..."
         )
-        self.completed.emit(self.output_path)
+        self.completed.emit(self.output_path, output_size)
 
     @staticmethod
     def _cleanup_work_dir(work_dir):

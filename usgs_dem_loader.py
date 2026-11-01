@@ -492,7 +492,7 @@ class USGSDEMPlugin(QObject):
         # Keep status feedback in a fixed-height slot so it cannot shift controls.
         self.dialog.status_label.setText(message)
 
-    def _download_completed(self, output_path):
+    def _download_completed(self, output_path, output_size):
         # Load a completed GeoTIFF into the current QGIS project.
         self._close_progress()
         if self._download_cancelled_by_user:
@@ -511,6 +511,32 @@ class USGSDEMPlugin(QObject):
                     duration=15,
                 )
             return
+
+        if output_size > DEMDownloadWorker.LARGE_DOWNLOAD_WARNING_THRESHOLD:
+            size_gb = output_size / 1_000_000_000
+            answer = QMessageBox.warning(
+                self.iface.mainWindow(),
+                "Large DEM Raster",
+                "The final GeoTIFF is {:.2f} GB ({} bytes). Keep it and add it to "
+                "the QGIS project?".format(size_gb, output_size),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                try:
+                    os.remove(output_path)
+                except OSError as error:
+                    message = (
+                        "The raster could not be discarded: {}. It remains at "
+                        "'{}'.".format(error, output_path)
+                    )
+                    self._set_status(message)
+                    QMessageBox.warning(
+                        self.iface.mainWindow(), "USGS 3DEP Downloader", message
+                    )
+                    return
+                self._set_status("Large DEM raster discarded by user.")
+                return
 
         layer = QgsRasterLayer(output_path, os.path.basename(output_path))
         if not layer.isValid():

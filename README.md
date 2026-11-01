@@ -22,7 +22,7 @@ The plugin uses QGIS's bundled Python and GDAL libraries; no separate Python env
 1. Click **Download USGS 3DEP DEM** in the toolbar or choose it from the **USGS 3DEP Downloader** menu.
 2. Choose the output GeoTIFF path in the dialog, or keep the suggested timestamped path in your Downloads folder. A custom filename is preserved for both the saved file and the layer added to the project.
 3. Click **Download Canvas Extent** to use the currently visible map area, or click **Select Area on Map** and drag a rectangle over a custom area. To use a polygon as the download boundary, select a polygon layer from **Polygon layer mask** and click **Download Polygon Layer**. Press **Esc** to cancel rectangle selection.
-4. Wait for the available tiles to download and be mosaicked. The resulting raster is added to the current QGIS project.
+4. Wait for the available tiles to download and be mosaicked. If the final GeoTIFF is larger than 1 GB, the plugin shows its actual size and lets you keep it and add it to the project, or discard it.
 
 The canvas extent or selected rectangle is transformed to geographic coordinates for the USGS search. Results depend on available 1-meter coverage; if no downloadable tiles cover the area, the plugin reports an error.
 
