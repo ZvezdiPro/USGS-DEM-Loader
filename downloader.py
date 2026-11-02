@@ -1,62 +1,147 @@
+import gc
 import json
 import os
+import shutil
 import tempfile
+import time
+import zipfile
+from threading import Event
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from qgis.PyQt.QtCore import QThread, pyqtSignal
+from qgis.PyQt.QtCore import QThread, pyqtSignal # type: ignore
+
+
+DEM_PRODUCTS = (
+    ("1 meter DEM (about 1 m)", "Digital Elevation Model (DEM) 1 meter", "GeoTIFF"),
+    (
+        "1/9 arc-second DEM (about 3 m)",
+        "National Elevation Dataset (NED) 1/9 arc-second",
+        "IMG",
+    ),
+    (
+        "1/3 arc-second DEM (about 10 m)",
+        "National Elevation Dataset (NED) 1/3 arc-second",
+        "GeoTIFF",
+    ),
+    (
+        "1 arc-second DEM (about 30 m)",
+        "National Elevation Dataset (NED) 1 arc-second",
+        "GeoTIFF",
+    ),
+)
+DEM_PRODUCT_DETAILS = {
+    dataset: (label, product_format)
+    for label, dataset, product_format in DEM_PRODUCTS
+}
+DEFAULT_DEM_DATASET = DEM_PRODUCTS[0][1]
 
 
 class DEMDownloadWorker(QThread):
     progressChanged = pyqtSignal(int, int, str)
-    completed = pyqtSignal(str)
+    completed = pyqtSignal(str, object)
     failed = pyqtSignal(str)
+    largeDownloadConfirmationRequested = pyqtSignal(object)
+    cancelled = pyqtSignal()
+    cleanupWarning = pyqtSignal(str)
 
     API_URL = "https://tnmaccess.nationalmap.gov/api/v1/products"
-    DATASET = "Digital Elevation Model (DEM) 1 meter"
+    DATASET = DEFAULT_DEM_DATASET
 
-    def __init__(self, min_x, min_y, max_x, max_y, output_path, parent=None):
+    def __init__(
+        self,
+        min_x,
+        min_y,
+        max_x,
+        max_y,
+        output_path,
+        parent=None,
+        cutline_path=None,
+        download_warning_enabled=True,
+        download_warning_threshold_bytes=3_000_000_000,
+        dataset=DEFAULT_DEM_DATASET,
+    ):
+        # Initialize a worker for downloading DEM tiles within geographic bounds.
         super().__init__(parent)
+        if dataset not in DEM_PRODUCT_DETAILS:
+            raise ValueError("Unsupported USGS 3DEP elevation product.")
         self.bounds = (min_x, min_y, max_x, max_y)
         self.output_path = output_path
+        self.cutline_path = cutline_path
+        self.dataset = dataset
+        self.product_label, self.product_format = DEM_PRODUCT_DETAILS[dataset]
+        self.download_warning_enabled = download_warning_enabled
+        self.download_warning_threshold_bytes = download_warning_threshold_bytes
+        self._download_approval_event = Event()
+        self._download_approved = False
+
+    def set_download_approval(self, approved):
+        self._download_approved = approved
+        self._download_approval_event.set()
 
     def run(self):
+        # Fetch matching tiles, mosaic them, and emit completion or failure signals.
+        work_dir = None
         try:
             products = self._find_products()
             products = [product for product in products if product.get("downloadURL")]
             if not products:
                 raise RuntimeError(
-                    "No USGS 3DEP 1-meter DEM tiles are available for this area."
+                    "No USGS 3DEP {} tiles are available for this area.".format(
+                        self.product_label
+                    )
                 )
 
-            with tempfile.TemporaryDirectory(prefix="usgs_3dep_") as work_dir:
-                tile_paths = []
-                total = len(products)
-                for index, product in enumerate(products, start=1):
+            total_download_size = sum(
+                int(product.get("sizeInBytes") or 0) for product in products
+            )
+            if (
+                self.download_warning_enabled
+                and total_download_size > self.download_warning_threshold_bytes
+            ):
+                self.largeDownloadConfirmationRequested.emit(total_download_size)
+                while not self._download_approval_event.wait(0.1):
                     if self.isInterruptionRequested():
-                        raise RuntimeError("The download was interrupted.")
-                    url = product.get("downloadURL")
-                    tile_path = self._download_tile(url, work_dir, index)
-                    tile_paths.append(tile_path)
-                    self.progressChanged.emit(
-                        index,
-                        total,
-                        "Downloaded tile {} of {}.".format(index, total),
-                    )
+                        self.cancelled.emit()
+                        return
+                if not self._download_approved:
+                    self.cancelled.emit()
+                    return
 
-                if not tile_paths:
-                    raise RuntimeError(
-                        "USGS returned DEM records without downloadable GeoTIFFs."
-                    )
+            work_dir = tempfile.mkdtemp(prefix="usgs_3dep_")
+            tile_paths = []
+            total = len(products)
+            for index, product in enumerate(products, start=1):
                 if self.isInterruptionRequested():
                     raise RuntimeError("The download was interrupted.")
-                self._mosaic(tile_paths)
+                url = product.get("downloadURL")
+                tile_paths.extend(self._download_tile(url, work_dir, index))
+                self.progressChanged.emit(
+                    index,
+                    total,
+                    "Downloaded tile {} of {}.".format(index, total),
+                )
 
-            self.progressChanged.emit(
-                total, total, "Adding the completed DEM to the map..."
-            )
-            self.completed.emit(self.output_path)
+            if not tile_paths:
+                raise RuntimeError(
+                    "USGS returned DEM records without downloadable raster files."
+                )
+            if self.isInterruptionRequested():
+                raise RuntimeError("The download was interrupted.")
+            self._mosaic(tile_paths)
+            if self.isInterruptionRequested():
+                raise RuntimeError("The download was interrupted.")
+            output_size = os.path.getsize(self.output_path)
         except Exception as error:
+            cleanup_errors = []
+            if work_dir is not None:
+                cleanup_error = self._cleanup_work_dir(work_dir)
+                if cleanup_error is not None:
+                    cleanup_errors.append(
+                        "Could not remove temporary download files: {}".format(
+                            cleanup_error
+                        )
+                    )
             if os.path.exists(self.output_path):
                 try:
                     os.remove(self.output_path)
@@ -66,9 +151,41 @@ class DEMDownloadWorker(QThread):
                             error, cleanup_error
                         )
                     )
+            if cleanup_errors:
+                error = RuntimeError(
+                    "{}; {}".format(error, "; ".join(cleanup_errors))
+                )
             self.failed.emit(str(error))
+            return
+
+        if work_dir is not None:
+            cleanup_error = self._cleanup_work_dir(work_dir)
+            if cleanup_error is not None:
+                self.cleanupWarning.emit(
+                    "DEM was created successfully, but temporary files could not "
+                    "be removed from '{}': {}".format(work_dir, cleanup_error)
+                )
+
+        self.progressChanged.emit(
+            total, total, "Finalizing the completed DEM..."
+        )
+        self.completed.emit(self.output_path, output_size)
+
+    @staticmethod
+    def _cleanup_work_dir(work_dir):
+        # Retry transient Windows file locks without treating cleanup as download failure.
+        gc.collect()
+        for attempt in range(5):
+            try:
+                shutil.rmtree(work_dir)
+                return None
+            except OSError as error:
+                if attempt == 4:
+                    return error
+                time.sleep(0.2)
 
     def _find_products(self):
+        # Query the USGS API for every DEM product intersecting the requested bounds.
         products = []
         offset = 0
         while True:
@@ -76,9 +193,9 @@ class DEMDownloadWorker(QThread):
                 raise RuntimeError("The download was interrupted.")
             query = urlencode(
                 {
-                    "datasets": self.DATASET,
+                    "datasets": self.dataset,
                     "bbox": ",".join(str(value) for value in self.bounds),
-                    "prodFormats": "GeoTIFF",
+                    "prodFormats": self.product_format,
                     "max": 1000,
                     "offset": offset,
                 }
@@ -100,6 +217,7 @@ class DEMDownloadWorker(QThread):
             offset += len(page)
 
     def _download_tile(self, url, work_dir, index):
+        # Download one DEM tile into the temporary working directory.
         filename = os.path.basename(urlparse(url).path)
         if not filename:
             filename = "tile_{}.tif".format(index)
@@ -113,25 +231,92 @@ class DEMDownloadWorker(QThread):
                 if not chunk:
                     break
                 target.write(chunk)
-        return destination
+        if destination.lower().endswith(".zip"):
+            return self._extract_tile_archive(destination, work_dir, index)
+        return [destination]
+
+    @staticmethod
+    def _extract_tile_archive(archive_path, work_dir, index):
+        extraction_dir = os.path.abspath(
+            os.path.join(work_dir, "tile_{}".format(index))
+        )
+        os.makedirs(extraction_dir, exist_ok=True)
+        with zipfile.ZipFile(archive_path) as archive:
+            members = [member for member in archive.infolist() if not member.is_dir()]
+            for member in members:
+                member_path = member.filename.replace("/", os.sep).replace(
+                    "\\", os.sep
+                )
+                destination = os.path.abspath(
+                    os.path.join(extraction_dir, member_path)
+                )
+                try:
+                    is_within_extraction_dir = (
+                        os.path.commonpath((extraction_dir, destination))
+                        == extraction_dir
+                    )
+                except ValueError:
+                    is_within_extraction_dir = False
+                if not is_within_extraction_dir:
+                    raise RuntimeError(
+                        "USGS returned an archive with an invalid file path."
+                    )
+                archive.extract(member, extraction_dir)
+
+        raster_paths = []
+        for root, _, filenames in os.walk(extraction_dir):
+            raster_paths.extend(
+                os.path.join(root, filename)
+                for filename in filenames
+                if filename.lower().endswith((".img", ".tif", ".tiff"))
+            )
+        if not raster_paths:
+            raise RuntimeError(
+                "USGS returned an elevation archive without a supported raster."
+            )
+        return sorted(raster_paths)
 
     def _mosaic(self, tile_paths):
-        from osgeo import gdal
+        # Mosaic downloaded tiles into the output GeoTIFF and crop to the bounds.
+        from osgeo import gdal # type: ignore
 
         gdal.UseExceptions()
-        first_tile = gdal.Open(tile_paths[0], gdal.GA_ReadOnly)
-        if first_tile is None or not first_tile.GetProjection():
-            raise RuntimeError("The downloaded DEM has no usable coordinate system.")
-
-        options = gdal.WarpOptions(
-            format="GTiff",
-            dstSRS=first_tile.GetProjection(),
-            outputBounds=self.bounds,
-            outputBoundsSRS="EPSG:4326",
-            creationOptions=["TILED=YES", "COMPRESS=LZW"],
-        )
-        result = gdal.Warp(self.output_path, tile_paths, options=options)
-        first_tile = None
-        if result is None:
-            raise RuntimeError("GDAL could not mosaic the downloaded DEM tiles.")
+        source_datasets = []
         result = None
+        try:
+            for tile_path in tile_paths:
+                dataset = gdal.Open(tile_path, gdal.GA_ReadOnly)
+                if dataset is None:
+                    raise RuntimeError(
+                        "Could not open downloaded DEM tile: {}".format(tile_path)
+                    )
+                source_datasets.append(dataset)
+
+            first_tile = source_datasets[0]
+            projection = first_tile.GetProjection()
+            if not projection:
+                raise RuntimeError(
+                    "The downloaded DEM has no usable coordinate system."
+                )
+
+            options = gdal.WarpOptions(
+                format="GTiff",
+                dstSRS=projection,
+                outputBounds=self.bounds,
+                outputBoundsSRS="EPSG:4326",
+                creationOptions=["TILED=YES", "COMPRESS=LZW"],
+                cutlineDSName=self.cutline_path,
+                cropToCutline=self.cutline_path is not None,
+                dstNodata=-9999 if self.cutline_path is not None else None,
+            )
+            result = gdal.Warp(
+                self.output_path, source_datasets, options=options
+            )
+            if result is None:
+                raise RuntimeError("GDAL could not mosaic the downloaded DEM tiles.")
+            result.FlushCache()
+        finally:
+            result = None
+            dataset = None
+            source_datasets.clear()
+            gc.collect()
