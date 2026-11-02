@@ -37,7 +37,7 @@ from qgis.core import ( # type: ignore
 )
 from qgis.gui import QgsFileWidget, QgsMapTool, QgsRubberBand # type: ignore
 
-from .downloader import DEMDownloadWorker
+from .downloader import DEFAULT_DEM_DATASET, DEM_PRODUCTS, DEMDownloadWorker
 
 
 def _geographic_bounds(rectangle, source_crs):
@@ -74,12 +74,25 @@ class AreaSelectionDialog(QDialog):
 
         layout = QVBoxLayout(self)
         prompt = QLabel(
-            "Choose an area to download USGS 3DEP 1-meter DEM data. Use the "
-            "canvas extent, draw a rectangle, or select a polygon layer as "
-            "the boundary. Coverage depends on the selected area."
+            "Choose a DEM Elevation Product and download area. Use the canvas "
+            "extent, draw a rectangle, or select a polygon layer as the "
+            "boundary. Coverage depends on the selected product and area."
         )
         prompt.setWordWrap(True)
         layout.addWidget(prompt)
+        product_layout = QVBoxLayout()
+        product_layout.setContentsMargins(0, 0, 0, 0)
+        product_layout.setSpacing(0)
+        product_layout.addWidget(QLabel("DEM Elevation Product:"))
+        self.elevation_product_combo = QComboBox()
+        for label, dataset, _ in DEM_PRODUCTS:
+            self.elevation_product_combo.addItem(label, dataset)
+        self.elevation_product_combo.setCurrentIndex(
+            self.elevation_product_combo.findData(DEFAULT_DEM_DATASET)
+        )
+        product_layout.addWidget(self.elevation_product_combo)
+        layout.addLayout(product_layout)
+
         output_path_layout = QVBoxLayout()
         output_path_layout.setContentsMargins(0, 0, 0, 0)
         output_path_layout.setSpacing(0)
@@ -576,6 +589,7 @@ class USGSDEMPlugin(QObject):
                 )
                 * self.BYTES_PER_GB
             ),
+            dataset=self.dialog.elevation_product_combo.currentData(),
         )
         self.worker.progressChanged.connect(self._update_progress)
         self.worker.completed.connect(self._download_completed)
