@@ -66,7 +66,12 @@ def _geographic_bounds(rectangle, source_crs):
 
 
 class AreaSelectionDialog(QDialog):
-    def __init__(self, default_output_path, parent=None):
+    def __init__(
+        self,
+        default_output_path,
+        parent=None,
+        default_dem_dataset=DEFAULT_DEM_DATASET,
+    ):
         # Build the dialog for choosing an output raster and download area.
         super().__init__(parent)
         self.setWindowTitle("USGS 3DEP DEM Downloader")
@@ -87,9 +92,14 @@ class AreaSelectionDialog(QDialog):
         self.elevation_product_combo = QComboBox()
         for label, dataset, _ in DEM_PRODUCTS:
             self.elevation_product_combo.addItem(label, dataset)
-        self.elevation_product_combo.setCurrentIndex(
-            self.elevation_product_combo.findData(DEFAULT_DEM_DATASET)
+        selected_product_index = self.elevation_product_combo.findData(
+            default_dem_dataset
         )
+        if selected_product_index < 0:
+            selected_product_index = self.elevation_product_combo.findData(
+                DEFAULT_DEM_DATASET
+            )
+        self.elevation_product_combo.setCurrentIndex(selected_product_index)
         product_layout.addWidget(self.elevation_product_combo)
         layout.addLayout(product_layout)
 
@@ -167,11 +177,29 @@ class LargeRasterSettingsDialog(QDialog):
         raster_warning_enabled,
         raster_threshold_gb,
         parent=None,
+        default_dem_dataset=DEFAULT_DEM_DATASET,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Large File Warning Settings")
+        self.setWindowTitle("USGS 3DEP Downloader Settings")
 
         layout = QVBoxLayout(self)
+        default_product_form = QFormLayout()
+        self.default_dem_combo = QComboBox()
+        for label, dataset, _ in DEM_PRODUCTS:
+            self.default_dem_combo.addItem(label, dataset)
+        selected_product_index = self.default_dem_combo.findData(
+            default_dem_dataset
+        )
+        if selected_product_index < 0:
+            selected_product_index = self.default_dem_combo.findData(
+                DEFAULT_DEM_DATASET
+            )
+        self.default_dem_combo.setCurrentIndex(selected_product_index)
+        default_product_form.addRow(
+            "Default DEM Elevation Product:", self.default_dem_combo
+        )
+        layout.addLayout(default_product_form)
+
         download_group = QVBoxLayout()
         self.download_warning_enabled_checkbox = QCheckBox(
             "Warn before downloading large source tiles"
@@ -301,6 +329,7 @@ class RectangleSelectionTool(QgsMapTool):
 
 
 class USGSDEMPlugin(QObject):
+    SETTINGS_DEFAULT_DEM_DATASET = "USGS_DEM_Loader/default_dem_dataset"
     SETTINGS_WARNING_ENABLED = "USGS_DEM_Loader/warn_large_raster"
     SETTINGS_WARNING_SIZE_GB = "USGS_DEM_Loader/large_raster_warning_size_gb"
     SETTINGS_DOWNLOAD_WARNING_ENABLED = "USGS_DEM_Loader/warn_large_download"
@@ -346,7 +375,7 @@ class USGSDEMPlugin(QObject):
 
         self.settings_action = QAction(
             QgsApplication.getThemeIcon("/mActionOptions.svg"),
-            "Large File Warning Settings...",
+            "DEM and Large File Settings...",
             self.iface.mainWindow(),
         )
         self.settings_action.triggered.connect(self.open_settings)
@@ -387,11 +416,16 @@ class USGSDEMPlugin(QObject):
                 self.DEFAULT_WARNING_SIZE_GB,
                 type=float,
             ),
-            self.iface.mainWindow(),
+            parent=self.iface.mainWindow(),
+            default_dem_dataset=self._default_dem_dataset(),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
+        self.settings.setValue(
+            self.SETTINGS_DEFAULT_DEM_DATASET,
+            dialog.default_dem_combo.currentData(),
+        )
         self.settings.setValue(
             self.SETTINGS_DOWNLOAD_WARNING_ENABLED,
             dialog.download_warning_enabled_checkbox.isChecked(),
@@ -413,8 +447,26 @@ class USGSDEMPlugin(QObject):
             QMessageBox.warning(
                 self.iface.mainWindow(),
                 "USGS 3DEP Downloader",
-                "Could not save the large raster warning settings.",
+                "Could not save the plugin settings.",
             )
+        elif self.dialog is not None:
+            selected_product_index = self.dialog.elevation_product_combo.findData(
+                dialog.default_dem_combo.currentData()
+            )
+            if selected_product_index >= 0:
+                self.dialog.elevation_product_combo.setCurrentIndex(
+                    selected_product_index
+                )
+
+    def _default_dem_dataset(self):
+        dataset = self.settings.value(
+            self.SETTINGS_DEFAULT_DEM_DATASET,
+            DEFAULT_DEM_DATASET,
+            type=str,
+        )
+        if dataset not in {product[1] for product in DEM_PRODUCTS}:
+            return DEFAULT_DEM_DATASET
+        return dataset
 
     def run(self):
         # Create and display the DEM download dialog.
@@ -422,7 +474,9 @@ class USGSDEMPlugin(QObject):
             default_output_path = self._default_output_path()
             self._last_default_output_path = default_output_path
             self.dialog = AreaSelectionDialog(
-                default_output_path, self.iface.mainWindow()
+                default_output_path,
+                self.iface.mainWindow(),
+                self._default_dem_dataset(),
             )
             self.dialog.select_button.clicked.connect(self.start_area_selection)
             self.dialog.canvas_extent_button.clicked.connect(
@@ -433,6 +487,13 @@ class USGSDEMPlugin(QObject):
             )
             self.dialog.finished.connect(self._dialog_closed)
             self.dialog.close_confirmation_callback = self._confirm_dialog_close
+        selected_product_index = self.dialog.elevation_product_combo.findData(
+            self._default_dem_dataset()
+        )
+        if selected_product_index >= 0:
+            self.dialog.elevation_product_combo.setCurrentIndex(
+                selected_product_index
+            )
         self._refresh_polygon_layers()
         self._set_status("")
         self.dialog.show()
