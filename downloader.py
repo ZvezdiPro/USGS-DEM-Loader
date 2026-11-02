@@ -7,7 +7,14 @@ import time
 import zipfile
 from threading import Event
 from urllib.parse import urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import (
+    HTTPDefaultErrorHandler,
+    HTTPErrorProcessor,
+    HTTPRedirectHandler,
+    HTTPSHandler,
+    OpenerDirector,
+    Request,
+)
 
 from qgis.PyQt.QtCore import QThread, pyqtSignal # type: ignore
 
@@ -35,6 +42,25 @@ DEM_PRODUCT_DETAILS = {
     for label, dataset, product_format in DEM_PRODUCTS
 }
 DEFAULT_DEM_DATASET = DEM_PRODUCTS[0][1]
+
+
+def _open_https(url, timeout=60):
+    parsed_url = urlparse(url)
+    if (
+        parsed_url.scheme.lower() != "https"
+        or not parsed_url.hostname
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+    ):
+        raise ValueError("Only valid HTTPS URLs are allowed.")
+
+    opener = OpenerDirector()
+    opener.add_handler(HTTPSHandler())
+    opener.add_handler(HTTPDefaultErrorHandler())
+    opener.add_handler(HTTPRedirectHandler())
+    opener.add_handler(HTTPErrorProcessor())
+    request = Request(url, headers={"User-Agent": "USGS-3DEP-QGIS-Plugin"})
+    return opener.open(request, timeout=timeout)
 
 
 class DEMDownloadWorker(QThread):
@@ -200,11 +226,7 @@ class DEMDownloadWorker(QThread):
                     "offset": offset,
                 }
             )
-            request = Request(
-                "{}?{}".format(self.API_URL, query),
-                headers={"User-Agent": "USGS-3DEP-QGIS-Plugin"},
-            )
-            with urlopen(request, timeout=60) as response:
+            with _open_https("{}?{}".format(self.API_URL, query)) as response:
                 data = json.loads(response.read().decode("utf-8"))
 
             page = data.get("items", [])
@@ -222,8 +244,7 @@ class DEMDownloadWorker(QThread):
         if not filename:
             filename = "tile_{}.tif".format(index)
         destination = os.path.join(work_dir, "{}_{}".format(index, filename))
-        request = Request(url, headers={"User-Agent": "USGS-3DEP-QGIS-Plugin"})
-        with urlopen(request, timeout=60) as response, open(destination, "wb") as target:
+        with _open_https(url) as response, open(destination, "wb") as target:
             while True:
                 if self.isInterruptionRequested():
                     raise RuntimeError("The download was interrupted.")
