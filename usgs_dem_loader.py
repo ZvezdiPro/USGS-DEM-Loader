@@ -40,6 +40,9 @@ from qgis.gui import QgsFileWidget, QgsMapTool, QgsRubberBand # type: ignore
 from .downloader import DEFAULT_DEM_DATASET, DEM_PRODUCTS, DEMDownloadWorker
 
 
+PLUGIN_NAME = "USGS DEM Downloader"
+
+
 def _geographic_bounds(rectangle, source_crs):
     # Transform a map rectangle to validated EPSG:4326 bounds.
     geometry = QgsGeometry.fromRect(rectangle)
@@ -74,7 +77,7 @@ class AreaSelectionDialog(QDialog):
     ):
         # Build the dialog for choosing an output raster and download area.
         super().__init__(parent)
-        self.setWindowTitle("USGS 3DEP DEM Downloader")
+        self.setWindowTitle(PLUGIN_NAME)
         self.setMinimumWidth(560)
 
         layout = QVBoxLayout(self)
@@ -180,7 +183,7 @@ class LargeRasterSettingsDialog(QDialog):
         default_dem_dataset=DEFAULT_DEM_DATASET,
     ):
         super().__init__(parent)
-        self.setWindowTitle("USGS 3DEP Downloader Settings")
+        self.setWindowTitle("{} Settings".format(PLUGIN_NAME))
 
         layout = QVBoxLayout(self)
         default_product_form = QFormLayout()
@@ -361,9 +364,9 @@ class USGSDEMPlugin(QObject):
     def initGui(self):
         # Add the plugin action to the QGIS toolbar and menu.
         icon_path = os.path.join(os.path.dirname(__file__), "logo.png")
-        plugin_menu_title = "USGS 3DEP Downloader"
+        plugin_menu_title = PLUGIN_NAME
         self.action = QAction(
-            QIcon(icon_path), "Download USGS 3DEP DEM", self.iface.mainWindow()
+            QIcon(icon_path), "Download USGS DEM", self.iface.mainWindow()
         )
         self.action.triggered.connect(self.run)
         self.iface.addToolBarIcon(self.action)
@@ -392,11 +395,9 @@ class USGSDEMPlugin(QObject):
         self._cleanup_mask()
         if self.action is not None:
             self.iface.removeToolBarIcon(self.action)
-            self.iface.removePluginMenu("USGS 3DEP Downloader", self.action)
+            self.iface.removePluginMenu(PLUGIN_NAME, self.action)
         if self.settings_action is not None:
-            self.iface.removePluginMenu(
-                "USGS 3DEP Downloader", self.settings_action
-            )
+            self.iface.removePluginMenu(PLUGIN_NAME, self.settings_action)
 
     def open_settings(self):
         dialog = LargeRasterSettingsDialog(
@@ -446,7 +447,7 @@ class USGSDEMPlugin(QObject):
         if self.settings.status() != QSettings.Status.NoError:
             QMessageBox.warning(
                 self.iface.mainWindow(),
-                "USGS 3DEP Downloader",
+                PLUGIN_NAME,
                 "Could not save the plugin settings.",
             )
         elif self.dialog is not None:
@@ -533,14 +534,14 @@ class USGSDEMPlugin(QObject):
             message = "Select a valid polygon layer from the project."
             self._set_status(message)
             QMessageBox.warning(
-                self.iface.mainWindow(), "USGS 3DEP Downloader", message
+                self.iface.mainWindow(), PLUGIN_NAME, message
             )
             return
         if not layer.crs().isValid() or layer.extent().isEmpty():
             message = "The selected polygon layer has no usable CRS or features."
             self._set_status(message)
             QMessageBox.warning(
-                self.iface.mainWindow(), "USGS 3DEP Downloader", message
+                self.iface.mainWindow(), PLUGIN_NAME, message
             )
             return
 
@@ -567,7 +568,7 @@ class USGSDEMPlugin(QObject):
             message = "Could not use the selected polygon layer: {}".format(error)
             self._set_status(message)
             QMessageBox.warning(
-                self.iface.mainWindow(), "USGS 3DEP Downloader", message
+                self.iface.mainWindow(), PLUGIN_NAME, message
             )
             return
 
@@ -590,7 +591,7 @@ class USGSDEMPlugin(QObject):
             message = "Could not use the canvas extent: {}".format(error)
             self._set_status(message)
             QMessageBox.warning(
-                self.iface.mainWindow(), "USGS 3DEP Downloader", message
+                self.iface.mainWindow(), PLUGIN_NAME, message
             )
             return
         self._area_selected(*bounds)
@@ -770,12 +771,9 @@ class USGSDEMPlugin(QObject):
     @staticmethod
     def _downloads_folder():
         # Return the platform's Downloads folder or the user's home fallback.
-        try:
-            folder = QStandardPaths.writableLocation(
-                QStandardPaths.StandardLocation.DownloadLocation
-            )
-        except AttributeError:
-            folder = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+        folder = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DownloadLocation
+        )
         return folder or os.path.join(os.path.expanduser("~"), "Downloads")
 
     def _update_progress(self, value, total, message):
@@ -802,7 +800,7 @@ class USGSDEMPlugin(QObject):
                 pass
             except OSError as error:
                 self.iface.messageBar().pushMessage(
-                    "USGS 3DEP",
+                    PLUGIN_NAME,
                     "The download was aborted, but its output could not be removed: "
                     "{}".format(error),
                     level=Qgis.MessageLevel.Warning,
@@ -838,7 +836,7 @@ class USGSDEMPlugin(QObject):
                     )
                     self._set_status(message)
                     QMessageBox.warning(
-                        self.iface.mainWindow(), "USGS 3DEP Downloader", message
+                        self.iface.mainWindow(), PLUGIN_NAME, message
                     )
                     return
                 self._set_status("Large DEM raster discarded by user.")
@@ -848,7 +846,7 @@ class USGSDEMPlugin(QObject):
         if not layer.isValid():
             QMessageBox.critical(
                 self.iface.mainWindow(),
-                "USGS 3DEP Downloader",
+                PLUGIN_NAME,
                 "The downloaded raster could not be opened: {}".format(output_path),
             )
             self._set_status("The downloaded raster could not be opened.")
@@ -871,7 +869,7 @@ class USGSDEMPlugin(QObject):
             "DEM downloaded and added to the map: {}".format(output_path)
         )
         self.iface.messageBar().pushMessage(
-            "USGS 3DEP",
+            PLUGIN_NAME,
             "DEM downloaded and added to the map.",
             level=Qgis.MessageLevel.Success,
             duration=8,
@@ -886,13 +884,13 @@ class USGSDEMPlugin(QObject):
             return
         self._set_status("Download failed: {}".format(message))
         QMessageBox.critical(
-            self.iface.mainWindow(), "USGS 3DEP Downloader", message
+            self.iface.mainWindow(), PLUGIN_NAME, message
         )
 
     def _cleanup_warning(self, message):
         # Report temporary-file cleanup separately from the DEM download result.
         self.iface.messageBar().pushMessage(
-            "USGS 3DEP",
+            PLUGIN_NAME,
             message,
             level=Qgis.MessageLevel.Warning,
             duration=15,
@@ -920,7 +918,7 @@ class USGSDEMPlugin(QObject):
         self._restore_map_tool()
         self._set_status("Area selection failed: {}".format(message))
         QMessageBox.warning(
-            self.iface.mainWindow(), "USGS 3DEP Downloader", message
+            self.iface.mainWindow(), PLUGIN_NAME, message
         )
 
     def _selection_cancelled(self):

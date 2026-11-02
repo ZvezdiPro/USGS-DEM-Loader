@@ -1,4 +1,4 @@
-# USGS 3DEP Downloader
+# USGS DEM Downloader
 
 A QGIS plugin that downloads USGS 3D Elevation Program (3DEP) DEM tiles at 1-meter, 1/9 arc-second (about 3-meter), 1/3 arc-second (about 10-meter), or 1 arc-second (about 30-meter) resolution for the current map canvas extent, a rectangle drawn on the map, or a polygon vector layer, mosaics them into a GeoTIFF, and adds the result to the current project.
 
@@ -15,12 +15,12 @@ The plugin uses QGIS's bundled Python and GDAL libraries; no separate Python env
 1. Download the latest plugin ZIP from the project's [Releases](https://github.com/ZvezdiPro/USGS_DEM_Loader/releases) page.
 2. In QGIS, open **Plugins → Manage and Install Plugins…** and select **Install from ZIP**.
 3. Browse to the downloaded ZIP file and click **Install Plugin**.
-4. Once installation is complete, enable **USGS 3DEP Downloader** under **Installed**.
+4. Once installation is complete, enable **USGS DEM Downloader** under **Installed**.
 
 ## Usage
 
-1. Click **Download USGS 3DEP DEM** in the toolbar or choose it from the **USGS 3DEP Downloader** menu.
-2. Choose a **DEM Elevation Product** in the dialog. The default is the 1-meter DEM, and you can change the default in **Plugins → USGS 3DEP Downloader → DEM and Large File Settings…**. Choose the output GeoTIFF path, or keep the suggested timestamped path in your Downloads folder. A custom filename is preserved for both the saved file and the layer added to the project.
+1. Click **Download USGS DEM** in the toolbar or choose it from the **USGS DEM Downloader** menu.
+2. Choose a **DEM Elevation Product** in the dialog. The default is the 1-meter DEM, and you can change the default in **Plugins → USGS DEM Downloader → DEM and Large File Settings…**. Choose the output GeoTIFF path, or keep the suggested timestamped path in your Downloads folder. A custom filename is preserved for both the saved file and the layer added to the project.
 3. Click **Download Canvas Extent** to use the currently visible map area, or click **Select Area on Map** and drag a rectangle over a custom area. To use a polygon as the download boundary, select a polygon layer from **Polygon layer mask** and click **Download Polygon Layer**. Press **Esc** to cancel rectangle selection.
 4. By default, if the estimated total source-tile download is larger than 3 GB, confirm that you want to proceed. Wait for the available tiles to download and be mosaicked. If the final GeoTIFF is larger than 1 GB, the plugin shows its actual size and lets you keep it and add it to the project, or discard it.
 
