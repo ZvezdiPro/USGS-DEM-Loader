@@ -4,7 +4,7 @@ A QGIS plugin that downloads USGS 3D Elevation Program (3DEP) DEM tiles at 1-met
 
 ## Requirements
 
-- QGIS 4.0 through 4.99
+- QGIS 3.20 through 4.99
 - An internet connection to search and download data from the USGS National Map
 - USGS 3DEP coverage for the selected product and area
 
