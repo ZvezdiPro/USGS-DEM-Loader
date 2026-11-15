@@ -9,7 +9,11 @@ from qgis.PyQt.QtCore import ( # type: ignore
     Qt,
     pyqtSignal,
 )
-from qgis.PyQt.QtGui import QAction, QColor, QIcon # type: ignore
+from qgis.PyQt.QtGui import QColor, QIcon # type: ignore
+try:
+    from qgis.PyQt.QtGui import QAction # type: ignore
+except ImportError:
+    from qgis.PyQt.QtWidgets import QAction # type: ignore
 from qgis.PyQt.QtWidgets import (  # type: ignore
     QComboBox,
     QCheckBox,
@@ -420,7 +424,10 @@ class USGSDEMPlugin(QObject):
             parent=self.iface.mainWindow(),
             default_dem_dataset=self._default_dem_dataset(),
         )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        exec_dialog = getattr(dialog, "exec", None)
+        if exec_dialog is None:
+            exec_dialog = dialog.exec_
+        if exec_dialog() != QDialog.DialogCode.Accepted:
             return
 
         self.settings.setValue(
